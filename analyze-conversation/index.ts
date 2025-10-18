@@ -9,6 +9,44 @@ const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type'
 };
+// Sanitization function to clean input strings
+function sanitizeInput(input) {
+  if (typeof input !== 'string') {
+    return input;
+  }
+  // Replace literal \n with actual newlines
+  let sanitized = input.replace(/\\n/g, '\n');
+  // Replace literal \t with actual tabs
+  sanitized = sanitized.replace(/\\t/g, '\t');
+  // Replace literal \r with actual carriage returns
+  sanitized = sanitized.replace(/\\r/g, '\r');
+  // Remove any other potentially problematic escape sequences
+  sanitized = sanitized.replace(/\\"/g, '"');
+  sanitized = sanitized.replace(/\\'/g, "'");
+  // Trim excessive whitespace while preserving intentional line breaks
+  sanitized = sanitized.replace(/\n{3,}/g, '\n\n');
+  return sanitized.trim();
+}
+// Recursive sanitization for objects
+function sanitizeObject(obj) {
+  if (obj === null || obj === undefined) {
+    return obj;
+  }
+  if (typeof obj === 'string') {
+    return sanitizeInput(obj);
+  }
+  if (Array.isArray(obj)) {
+    return obj.map((item)=>sanitizeObject(item));
+  }
+  if (typeof obj === 'object') {
+    const sanitized = {};
+    for (const [key, value] of Object.entries(obj)){
+      sanitized[key] = sanitizeObject(value);
+    }
+    return sanitized;
+  }
+  return obj;
+}
 serve(async (req)=>{
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -18,7 +56,10 @@ serve(async (req)=>{
   }
   try {
     // Parse request body
-    const { conversation, relationship_type = 'romantic', additional_context } = await req.json();
+    const rawBody = await req.json();
+    // Sanitize all inputs
+    const sanitizedBody = sanitizeObject(rawBody);
+    const { conversation, relationship_type = 'romantic', additional_context } = sanitizedBody;
     if (!conversation) {
       return new Response(JSON.stringify({
         success: false,
@@ -172,59 +213,116 @@ IMPORTANT GUIDELINES:
 8. Address both individual and relational dynamics
 9. Use "You" pronoun when writing partner profiles
 10. Make probabilities realistic based on actual conversation content`;
-    // Call Claude API
-    const claudeResponse = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': CLAUDE_API_KEY,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: 'claude-3-5-sonnet-20241022',
-        max_tokens: 8192,
-        temperature: 0.7,
-        system: systemPrompt,
-        messages: [
-          {
-            role: 'user',
-            content: userPrompt
+    // Call Claude API with retry logic for invalid JSON
+    let analysis = null;
+    let conversationMessages = [
+      {
+        role: 'user',
+        content: userPrompt
+      }
+    ];
+    const maxRetries = 3;
+    let attempt = 0;
+    let totalTokensUsed = {
+      input: 0,
+      output: 0
+    };
+    while(attempt < maxRetries && !analysis){
+      attempt++;
+      const claudeResponse = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': CLAUDE_API_KEY,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: 'claude-3-5-sonnet-20241022',
+          max_tokens: 8192,
+          temperature: 0.7,
+          system: systemPrompt,
+          messages: conversationMessages
+        })
+      });
+      if (!claudeResponse.ok) {
+        const error = await claudeResponse.text();
+        console.error('Claude API error:', error);
+        return new Response(JSON.stringify({
+          success: false,
+          error: 'Failed to analyze conversation'
+        }), {
+          status: 500,
+          headers: {
+            ...corsHeaders,
+            'Content-Type': 'application/json'
           }
-        ]
-      })
-    });
-    if (!claudeResponse.ok) {
-      const error = await claudeResponse.text();
-      console.error('Claude API error:', error);
-      return new Response(JSON.stringify({
-        success: false,
-        error: 'Failed to analyze conversation'
-      }), {
-        status: 500,
-        headers: {
-          ...corsHeaders,
-          'Content-Type': 'application/json'
+        });
+      }
+      const claudeData = await claudeResponse.json();
+      totalTokensUsed.input += claudeData.usage.input_tokens;
+      totalTokensUsed.output += claudeData.usage.output_tokens;
+      const analysisText = claudeData.content[0].text;
+      // Extract JSON from response
+      const jsonMatch = analysisText.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        console.error('Failed to extract JSON from Claude response');
+        if (attempt < maxRetries) {
+          // Add assistant response and retry request to conversation
+          conversationMessages.push({
+            role: 'assistant',
+            content: analysisText
+          });
+          conversationMessages.push({
+            role: 'user',
+            content: 'The response did not contain valid JSON. Please regenerate the complete psychological analysis in the exact JSON format specified in the original request. Make sure to return ONLY valid JSON without any additional text or markdown formatting.'
+          });
+          console.log(`Retry attempt ${attempt}: No JSON found in response`);
+          continue;
+        } else {
+          return new Response(JSON.stringify({
+            success: false,
+            error: 'Invalid analysis format after multiple attempts'
+          }), {
+            status: 500,
+            headers: {
+              ...corsHeaders,
+              'Content-Type': 'application/json'
+            }
+          });
         }
-      });
-    }
-    const claudeData = await claudeResponse.json();
-    const analysisText = claudeData.content[0].text;
-    // Extract JSON from response
-    const jsonMatch = analysisText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      console.error('Failed to extract JSON from Claude response');
-      return new Response(JSON.stringify({
-        success: false,
-        error: 'Invalid analysis format'
-      }), {
-        status: 500,
-        headers: {
-          ...corsHeaders,
-          'Content-Type': 'application/json'
+      }
+      // Try to parse JSON
+      try {
+        analysis = JSON.parse(jsonMatch[0]);
+        console.log(`Successfully parsed JSON on attempt ${attempt}`);
+      } catch (parseError) {
+        console.error(`JSON parse error on attempt ${attempt}:`, parseError.message);
+        if (attempt < maxRetries) {
+          // Add assistant response and error feedback to conversation
+          conversationMessages.push({
+            role: 'assistant',
+            content: analysisText
+          });
+          conversationMessages.push({
+            role: 'user',
+            content: `The JSON you provided is invalid. Error: ${parseError.message}\n\nPlease regenerate the complete psychological analysis with valid JSON. Pay special attention to:\n1. Properly escaped quotes in strings\n2. No trailing commas\n3. All strings properly quoted\n4. Valid JSON syntax throughout\n\nReturn ONLY the corrected JSON without any additional text.`
+          });
+          console.log(`Retry attempt ${attempt}: JSON parse error - ${parseError.message}`);
+          continue;
+        } else {
+          return new Response(JSON.stringify({
+            success: false,
+            error: `Invalid JSON format after ${maxRetries} attempts: ${parseError.message}`
+          }), {
+            status: 500,
+            headers: {
+              ...corsHeaders,
+              'Content-Type': 'application/json'
+            }
+          });
         }
-      });
+      }
     }
-    const analysis = JSON.parse(jsonMatch[0]);
     // Save to Supabase
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
     // Quality assessment
@@ -295,10 +393,8 @@ IMPORTANT GUIDELINES:
         communication_patterns: analysis.communication_patterns,
         insights: analysis.insights,
         model_used: 'claude-3-5-sonnet-20241022',
-        tokens_used: {
-          input: claudeData.usage.input_tokens,
-          output: claudeData.usage.output_tokens
-        }
+        tokens_used: totalTokensUsed,
+        retry_attempts: attempt
       }).select().single();
       if (profileError) {
         console.error('Error saving profile:', profileError);
@@ -330,7 +426,8 @@ IMPORTANT GUIDELINES:
       conversation_id: conversationId,
       profile_id: profileId,
       analysis,
-      tokens_used: claudeData.usage,
+      tokens_used: totalTokensUsed,
+      retry_attempts: attempt,
       saved_to_database: !!conversationId
     }), {
       status: 200,
