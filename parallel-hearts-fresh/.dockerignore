@@ -1,0 +1,10 @@
+node_modules
+dist
+pnpm-store
+.git
+.gitignore
+.env.local
+*.log
+Dockerfile.prod
+Dockerfile.dev
+tmp
