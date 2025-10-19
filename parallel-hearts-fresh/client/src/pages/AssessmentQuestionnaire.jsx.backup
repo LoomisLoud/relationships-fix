@@ -1,0 +1,488 @@
+import { useState, useEffect } from 'react'
+import { useNavigate, useLocation } from 'react-router-dom'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { Progress } from '@/components/ui/progress'
+import { ChevronLeft, ChevronRight, Sparkles } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { realms } from '@/data/assessmentQuestions'
+
+export default function AssessmentQuestionnaire() {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const { type, subType, mode, assessingFor, assessmentId } = location.state || {}
+
+  const [currentRealmIndex, setCurrentRealmIndex] = useState(0)
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0)
+  const [answers, setAnswers] = useState({})
+  const [selectedAnswer, setSelectedAnswer] = useState(null)
+  const [rankingOrder, setRankingOrder] = useState([])
+
+  const currentRealm = realms[currentRealmIndex]
+  const currentQuestion = currentRealm.questions[currentQuestionIndex]
+  const totalQuestions = realms.reduce((sum, realm) => sum + realm.questions.length, 0)
+  const answeredQuestions = Object.keys(answers).length
+  const progress = (answeredQuestions / totalQuestions) * 100
+
+  useEffect(() => {
+    // Load existing answer if navigating back
+    const existingAnswer = answers[currentQuestion.id]
+    if (existingAnswer) {
+      setSelectedAnswer(existingAnswer)
+      if (currentQuestion.type === 'ranking') {
+        setRankingOrder(existingAnswer)
+      }
+    } else {
+      setSelectedAnswer(null)
+      setRankingOrder([])
+    }
+  }, [currentQuestion.id, answers])
+
+  const handleAnswer = (value) => {
+    setSelectedAnswer(value)
+    
+    // Auto-advance for non-ranking questions
+    if (currentQuestion.type !== 'ranking' && currentQuestion.type !== 'slider') {
+      setTimeout(() => {
+        saveAndContinue(value)
+      }, 500)
+    }
+  }
+
+  const handleRankingToggle = (value) => {
+    const newOrder = rankingOrder.includes(value)
+      ? rankingOrder.filter(v => v !== value)
+      : [...rankingOrder, value]
+    setRankingOrder(newOrder)
+    setSelectedAnswer(newOrder)
+  }
+
+  const saveAndContinue = (value = selectedAnswer) => {
+    if (!value && currentQuestion.type !== 'slider') return
+
+    // Save answer
+    setAnswers(prev => ({
+      ...prev,
+      [currentQuestion.id]: value || selectedAnswer
+    }))
+
+    // Move to next question
+    if (currentQuestionIndex < currentRealm.questions.length - 1) {
+      setCurrentQuestionIndex(currentQuestionIndex + 1)
+    } else if (currentRealmIndex < realms.length - 1) {
+      // Move to next realm
+      setCurrentRealmIndex(currentRealmIndex + 1)
+      setCurrentQuestionIndex(0)
+    } else {
+      // Assessment complete
+      completeAssessment()
+    }
+  }
+
+  const goBack = () => {
+    if (currentQuestionIndex > 0) {
+      setCurrentQuestionIndex(currentQuestionIndex - 1)
+    } else if (currentRealmIndex > 0) {
+      setCurrentRealmIndex(currentRealmIndex - 1)
+      setCurrentQuestionIndex(realms[currentRealmIndex - 1].questions.length - 1)
+    }
+  }
+
+  const completeAssessment = () => {
+    // Save assessment data
+    const assessmentData = {
+      answers,
+      relationshipType: type,
+      subType,
+      mode,
+      assessingFor,
+      assessmentId,
+      completedAt: new Date().toISOString()
+    }
+
+    // Store locally
+    const storageKey = assessmentId 
+      ? `assessment_${assessmentId}_${assessingFor}`
+      : `assessment_solo_${Date.now()}`
+    localStorage.setItem(storageKey, JSON.stringify(assessmentData))
+
+    // Navigate to loading/analysis
+    if (mode === 'solo_both' && assessingFor === 'self_first') {
+      // Now do partner assessment
+      navigate('/assessment-questionnaire', {
+        state: {
+          type,
+          subType,
+          mode,
+          assessingFor: 'partner',
+          selfAnswers: answers
+        }
+      })
+    } else {
+      // Go to analysis
+      navigate('/loading-realities', {
+        state: {
+          type,
+          subType,
+          source: 'assessment',
+          assessmentData
+        }
+      })
+    }
+  }
+
+  return (
+    <div className="min-h-screen relative overflow-hidden">
+      {/* Animated cosmic background */}
+      <div className="absolute inset-0 cosmic-bg opacity-30"></div>
+      
+      {/* Floating particles */}
+      <div className="absolute inset-0 pointer-events-none">
+        {[...Array(30)].map((_, i) => (
+          <motion.div
+            key={i}
+            className="absolute w-1 h-1 rounded-full"
+            style={{
+              left: `${Math.random() * 100}%`,
+              top: `${Math.random() * 100}%`,
+              background: currentRealm.color,
+              boxShadow: `0 0 10px ${currentRealm.color}`
+            }}
+            animate={{
+              y: [0, -30, 0],
+              opacity: [0, 1, 0],
+              scale: [0, 1.5, 0]
+            }}
+            transition={{
+              duration: 3 + Math.random() * 3,
+              repeat: Infinity,
+              delay: Math.random() * 5
+            }}
+          />
+        ))}
+      </div>
+
+      <div className="relative z-10 container mx-auto px-4 py-8 flex flex-col min-h-screen">
+        
+        {/* Progress Bar */}
+        <motion.div
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mb-8"
+        >
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm text-gray-400">
+              Realm {currentRealmIndex + 1} of {realms.length}
+            </span>
+            <span className="text-sm text-cyan-400 font-bold">
+              {answeredQuestions} / {totalQuestions} questions
+            </span>
+          </div>
+          <Progress 
+            value={progress} 
+            className="h-2"
+            style={{
+              background: 'rgba(255, 255, 255, 0.1)'
+            }}
+          />
+        </motion.div>
+
+        {/* Realm Header */}
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={`realm-${currentRealmIndex}`}
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+            className="text-center mb-8"
+          >
+            <motion.div
+              className="text-6xl mb-4"
+              animate={{
+                scale: [1, 1.1, 1],
+                rotate: [0, 5, -5, 0]
+              }}
+              transition={{ duration: 3, repeat: Infinity }}
+            >
+              {currentRealm.emoji}
+            </motion.div>
+
+            <h2 
+              className="text-3xl md:text-4xl font-black mb-2"
+              style={{ color: currentRealm.color }}
+            >
+              {currentRealm.name}
+            </h2>
+
+            <p className="text-lg text-gray-300 mb-1">
+              {currentRealm.theme}
+            </p>
+
+            <p className="text-sm text-gray-400">
+              {currentRealm.description}
+            </p>
+          </motion.div>
+        </AnimatePresence>
+
+        {/* Question Card */}
+        <div className="flex-1 flex items-center justify-center mb-8">
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={currentQuestion.id}
+              initial={{ opacity: 0, x: 100 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -100 }}
+              className="w-full max-w-3xl"
+            >
+              <Card
+                className="border-4 overflow-hidden"
+                style={{
+                  borderColor: currentRealm.color,
+                  background: 'rgba(20, 10, 40, 0.9)',
+                  backdropFilter: 'blur(10px)',
+                  boxShadow: `0 0 40px ${currentRealm.color}40`
+                }}
+              >
+                <div className="p-8 md:p-12">
+                  {/* Question Text */}
+                  <h3 className="text-2xl md:text-3xl font-bold text-white mb-8 text-center">
+                    {currentQuestion.text}
+                  </h3>
+
+                  {/* Answer Options */}
+                  <div className="space-y-4">
+                    {/* Choice Type */}
+                    {currentQuestion.type === 'choice' && (
+                      <div className="grid grid-cols-1 gap-4">
+                        {currentQuestion.options.map((option, index) => {
+                          const isSelected = selectedAnswer === option.value
+                          
+                          return (
+                            <motion.div
+                              key={option.value}
+                              initial={{ opacity: 0, y: 20 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              transition={{ delay: index * 0.1 }}
+                              whileHover={{ scale: 1.02 }}
+                              whileTap={{ scale: 0.98 }}
+                              onClick={() => handleAnswer(option.value)}
+                              className="cursor-pointer"
+                            >
+                              <div
+                                className={`p-6 rounded-xl border-3 transition-all duration-300 ${
+                                  isSelected
+                                    ? 'neon-border'
+                                    : 'border-gray-600 hover:border-gray-400'
+                                }`}
+                                style={{
+                                  background: isSelected
+                                    ? `${currentRealm.color}20`
+                                    : 'rgba(255, 255, 255, 0.05)',
+                                  borderColor: isSelected ? currentRealm.color : undefined,
+                                  boxShadow: isSelected ? `0 0 20px ${currentRealm.color}` : 'none'
+                                }}
+                              >
+                                <div className="flex items-center space-x-4">
+                                  {option.emoji && (
+                                    <span className="text-3xl">{option.emoji}</span>
+                                  )}
+                                  <span 
+                                    className="text-lg font-medium"
+                                    style={{ color: isSelected ? currentRealm.color : '#fff' }}
+                                  >
+                                    {option.label}
+                                  </span>
+                                </div>
+                              </div>
+                            </motion.div>
+                          )
+                        })}
+                      </div>
+                    )}
+
+                    {/* Visual Type */}
+                    {currentQuestion.type === 'visual' && (
+                      <div className="grid grid-cols-2 gap-4">
+                        {currentQuestion.options.map((option, index) => {
+                          const isSelected = selectedAnswer === option.value
+                          
+                          return (
+                            <motion.div
+                              key={option.value}
+                              initial={{ opacity: 0, scale: 0.8 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              transition={{ delay: index * 0.1 }}
+                              whileHover={{ scale: 1.05 }}
+                              whileTap={{ scale: 0.95 }}
+                              onClick={() => handleAnswer(option.value)}
+                              className="cursor-pointer"
+                            >
+                              <div
+                                className={`p-8 rounded-xl border-3 transition-all duration-300 flex flex-col items-center justify-center aspect-square ${
+                                  isSelected
+                                    ? 'neon-border pulse-glow'
+                                    : 'border-gray-600 hover:border-gray-400'
+                                }`}
+                                style={{
+                                  background: isSelected
+                                    ? `${currentRealm.color}20`
+                                    : 'rgba(255, 255, 255, 0.05)',
+                                  borderColor: isSelected ? currentRealm.color : undefined,
+                                  boxShadow: isSelected ? `0 0 30px ${currentRealm.color}` : 'none'
+                                }}
+                              >
+                                {option.emoji && (
+                                  <span className="text-5xl mb-4">{option.emoji}</span>
+                                )}
+                                <span 
+                                  className="text-center font-medium"
+                                  style={{ color: isSelected ? currentRealm.color : '#fff' }}
+                                >
+                                  {option.label}
+                                </span>
+                              </div>
+                            </motion.div>
+                          )
+                        })}
+                      </div>
+                    )}
+
+                    {/* Slider Type */}
+                    {currentQuestion.type === 'slider' && (
+                      <div className="py-8">
+                        <input
+                          type="range"
+                          min={currentQuestion.min}
+                          max={currentQuestion.max}
+                          value={selectedAnswer || currentQuestion.default}
+                          onChange={(e) => setSelectedAnswer(parseInt(e.target.value))}
+                          className="w-full h-3 rounded-lg appearance-none cursor-pointer"
+                          style={{
+                            background: `linear-gradient(to right, ${currentRealm.color} 0%, ${currentRealm.color} ${((selectedAnswer || currentQuestion.default) - currentQuestion.min) / (currentQuestion.max - currentQuestion.min) * 100}%, rgba(255,255,255,0.1) ${((selectedAnswer || currentQuestion.default) - currentQuestion.min) / (currentQuestion.max - currentQuestion.min) * 100}%, rgba(255,255,255,0.1) 100%)`
+                          }}
+                        />
+                        <div className="flex justify-between mt-4">
+                          <span className="text-sm text-gray-400">{currentQuestion.min}</span>
+                          <span 
+                            className="text-3xl font-black"
+                            style={{ color: currentRealm.color }}
+                          >
+                            {selectedAnswer || currentQuestion.default}
+                          </span>
+                          <span className="text-sm text-gray-400">{currentQuestion.max}</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Ranking Type */}
+                    {currentQuestion.type === 'ranking' && (
+                      <div className="space-y-4">
+                        <p className="text-center text-sm text-gray-400 mb-4">
+                          Tap to select in order of importance (most to least)
+                        </p>
+                        <div className="grid grid-cols-1 gap-3">
+                          {currentQuestion.options.map((option, index) => {
+                            const rankPosition = rankingOrder.indexOf(option.value)
+                            const isRanked = rankPosition !== -1
+                            
+                            return (
+                              <motion.div
+                                key={option.value}
+                                initial={{ opacity: 0, x: -20 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                transition={{ delay: index * 0.05 }}
+                                whileHover={{ scale: 1.02 }}
+                                whileTap={{ scale: 0.98 }}
+                                onClick={() => handleRankingToggle(option.value)}
+                                className="cursor-pointer"
+                              >
+                                <div
+                                  className={`p-4 rounded-xl border-2 transition-all duration-300 flex items-center space-x-4 ${
+                                    isRanked
+                                      ? 'border-current'
+                                      : 'border-gray-600 hover:border-gray-400'
+                                  }`}
+                                  style={{
+                                    background: isRanked
+                                      ? `${currentRealm.color}20`
+                                      : 'rgba(255, 255, 255, 0.05)',
+                                    borderColor: isRanked ? currentRealm.color : undefined,
+                                    boxShadow: isRanked ? `0 0 15px ${currentRealm.color}` : 'none'
+                                  }}
+                                >
+                                  {isRanked && (
+                                    <div
+                                      className="w-8 h-8 rounded-full flex items-center justify-center font-black text-lg"
+                                      style={{
+                                        background: currentRealm.color,
+                                        color: '#000'
+                                      }}
+                                    >
+                                      {rankPosition + 1}
+                                    </div>
+                                  )}
+                                  <span 
+                                    className="font-medium"
+                                    style={{ color: isRanked ? currentRealm.color : '#fff' }}
+                                  >
+                                    {option.label}
+                                  </span>
+                                </div>
+                              </motion.div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </Card>
+            </motion.div>
+          </AnimatePresence>
+        </div>
+
+        {/* Navigation Buttons */}
+        <div className="flex justify-between items-center">
+          <Button
+            onClick={goBack}
+            disabled={currentRealmIndex === 0 && currentQuestionIndex === 0}
+            className="px-6 py-3"
+            style={{
+              background: 'rgba(255, 255, 255, 0.1)',
+              border: '2px solid rgba(255, 255, 255, 0.3)'
+            }}
+          >
+            <ChevronLeft className="w-5 h-5 mr-2" />
+            Back
+          </Button>
+
+          {(currentQuestion.type === 'slider' || currentQuestion.type === 'ranking') && (
+            <Button
+              onClick={() => saveAndContinue()}
+              disabled={!selectedAnswer || (currentQuestion.type === 'ranking' && rankingOrder.length === 0)}
+              className="px-8 py-3 neon-border pulse-glow"
+              style={{
+                background: `linear-gradient(135deg, ${currentRealm.color}, #9d00ff)`,
+                border: `3px solid ${currentRealm.color}`,
+                opacity: (!selectedAnswer || (currentQuestion.type === 'ranking' && rankingOrder.length === 0)) ? 0.5 : 1
+              }}
+            >
+              {currentRealmIndex === realms.length - 1 && currentQuestionIndex === currentRealm.questions.length - 1 ? (
+                <>
+                  <Sparkles className="w-5 h-5 mr-2" />
+                  Complete
+                </>
+              ) : (
+                <>
+                  Next
+                  <ChevronRight className="w-5 h-5 ml-2" />
+                </>
+              )}
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
